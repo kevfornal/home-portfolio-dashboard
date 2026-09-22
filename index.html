@@ -448,6 +448,38 @@
       updateDashboard();
     }
 
+    function fillMissingDates(dates, rawHistory, selectedTickers) {
+      if (dates.length === 0) return { filledDates: [], filledTotals: [] };
+    
+      const start = new Date(dates[0]);
+      const end = new Date(dates[dates.length - 1]);
+      const filledDates = [];
+      const filledTotals = [];
+    
+      let lastKnownValues = {};
+      let current = new Date(start);
+    
+      while (current <= end) {
+        const dateStr = current.toISOString().split('T')[0];
+        
+        // Update last known position values if explicit transaction exists on dateStr
+        if (rawHistory[dateStr]) {
+          Object.assign(lastKnownValues, rawHistory[dateStr]);
+        }
+    
+        let daySum = 0;
+        selectedTickers.forEach(t => {
+          daySum += (lastKnownValues[t] || 0);
+        });
+    
+        filledDates.push(dateStr);
+        filledTotals.push(daySum);
+    
+        current.setDate(current.getDate() + 1);
+      }
+    
+      return { filledDates, filledTotals };
+    }
     function updateDashboard() {
       if (!rawPortfolioData || !rawPortfolioData.history) return;
 
