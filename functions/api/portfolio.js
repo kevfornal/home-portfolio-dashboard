@@ -1,6 +1,6 @@
 // functions/api/portfolio.js
 
-// GET: Fetch encrypted portfolio blob from D1
+// GET: Fetch encrypted portfolio from Cloudflare D1
 export async function onRequestGet(context) {
   const { env } = context;
   try {
@@ -9,7 +9,7 @@ export async function onRequestGet(context) {
     ).all();
 
     if (!results || results.length === 0) {
-      return new Response(JSON.stringify({ error: "No portfolio found" }), { status: 404 });
+      return new Response(JSON.stringify({ error: "No portfolio found in D1" }), { status: 404 });
     }
 
     return new Response(results[0].encrypted_data, {
@@ -20,7 +20,7 @@ export async function onRequestGet(context) {
   }
 }
 
-// POST: Save updated encrypted portfolio blob to D1
+// POST: Save updated encrypted portfolio to Cloudflare D1
 export async function onRequestPost(context) {
   const { request, env } = context;
   try {
