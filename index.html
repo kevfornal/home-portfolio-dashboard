@@ -167,6 +167,7 @@
     let selectedTimeframe = 'ALL';
     let chartInstance = null;
     let currentEntryMode = 'value'; // 'value' or 'qty'
+    let currentPassphrase = ""; // Session passphrase memory
 
     function setDefaultDate() {
       const dateInput = document.getElementById('newDateInput');
@@ -199,47 +200,25 @@
       errorEl.classList.add('hidden');
 
       try {
-        const res = await fetch('./portfolio_data.enc');
-        if (!res.ok) throw new Error("Could not find portfolio_data.enc file");
+        let encContainer = null;
 
-        let currentPassphrase = ""; // Stored in memory while unlocked
-
-        async function savePortfolioData() {
-          if (!rawPortfolioData || !currentPassphrase) return;
-        
-          rawPortfolioData.last_updated = new Date().toISOString().split('T')[0];
-        
-          // Re-encrypt updated rawPortfolioData using passphrase
-          const jsonString = JSON.stringify(rawPortfolioData);
-          const salt = CryptoJS.lib.WordArray.random(128 / 8);
-          const iv = CryptoJS.lib.WordArray.random(128 / 8);
-        
-          const key = CryptoJS.PBKDF2(currentPassphrase, salt, {
-            keySize: 256 / 32,
-            iterations: 1000,
-            hasher: CryptoJS.algo.SHA256
-          });
-        
-          const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
-            iv: iv,
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-          });
-        
-          const payload = JSON.stringify({
-            salt: CryptoJS.enc.Base64.stringify(salt),
-            iv: CryptoJS.enc.Base64.stringify(iv),
-            ciphertext: encrypted.toString()
-          });
-        
-          // Save to Cloudflare D1 via Pages Function
-          await fetch('/api/portfolio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload
-          });
+        // Try fetching from Cloudflare D1 first
+        try {
+          const apiRes = await fetch('/api/portfolio');
+          if (apiRes.ok) {
+            encContainer = await apiRes.json();
+          }
+        } catch (apiErr) {
+          console.warn("D1 fetch skipped/failed, falling back to static file.");
         }
-        const encContainer = await res.json();
+
+        // Fall back to static portfolio_data.enc if D1 is empty or unavailable
+        if (!encContainer) {
+          const res = await fetch('./portfolio_data.enc');
+          if (!res.ok) throw new Error("Could not find portfolio data payload");
+          encContainer = await res.json();
+        }
+        
         const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
         const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
         const ciphertext = encContainer.ciphertext;
@@ -260,6 +239,7 @@
         if (!jsonString) throw new Error("Decryption failed - incorrect passphrase.");
 
         rawPortfolioData = JSON.parse(jsonString);
+        currentPassphrase = passphrase; // Save valid passphrase to active memory
         
         if (!rawPortfolioData.history) rawPortfolioData.history = {};
 
@@ -280,6 +260,46 @@
         console.error(e);
         errorEl.innerText = e.message || "Invalid Key. Decryption failed.";
         errorEl.classList.remove('hidden');
+      }
+    }
+
+    async function savePortfolioData() {
+      if (!rawPortfolioData || !currentPassphrase) return;
+
+      rawPortfolioData.last_updated = new Date().toISOString().split('T')[0];
+
+      // Re-encrypt payload using active passphrase
+      const jsonString = JSON.stringify(rawPortfolioData);
+      const salt = CryptoJS.lib.WordArray.random(128 / 8);
+      const iv = CryptoJS.lib.WordArray.random(128 / 8);
+
+      const key = CryptoJS.PBKDF2(currentPassphrase, salt, {
+        keySize: 256 / 32,
+        iterations: 1000,
+        hasher: CryptoJS.algo.SHA256
+      });
+
+      const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+
+      const payload = JSON.stringify({
+        salt: CryptoJS.enc.Base64.stringify(salt),
+        iv: CryptoJS.enc.Base64.stringify(iv),
+        ciphertext: encrypted.toString()
+      });
+
+      try {
+        const res = await fetch('/api/portfolio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload
+        });
+        if (!res.ok) console.error("Failed to persist to Cloudflare D1");
+      } catch (err) {
+        console.error("D1 save error:", err);
       }
     }
 
@@ -306,7 +326,7 @@
       }
     }
 
-    function addCustomTicker() {
+    async function addCustomTicker() {
       const symbolInput = document.getElementById('newTickerInput');
       const dateInput = document.getElementById('newDateInput');
       const inputA = document.getElementById('inputA');
@@ -380,9 +400,12 @@
       selectedTickers.add(ticker);
       renderTickerCheckboxes();
       updateDashboard();
+
+      // Persist changes to Cloudflare D1
+      await savePortfolioData();
     }
 
-    function deleteTicker(ticker) {
+    async function deleteTicker(ticker) {
       if (!confirm(`Are you sure you want to remove ${ticker}?`)) return;
 
       Object.keys(rawPortfolioData.history).forEach(d => {
@@ -393,6 +416,9 @@
       refreshAvailableTickers();
       renderTickerCheckboxes();
       updateDashboard();
+
+      // Persist changes to Cloudflare D1
+      await savePortfolioData();
     }
 
     function renderTickerCheckboxes() {
@@ -448,38 +474,6 @@
       updateDashboard();
     }
 
-    function fillMissingDates(dates, rawHistory, selectedTickers) {
-      if (dates.length === 0) return { filledDates: [], filledTotals: [] };
-    
-      const start = new Date(dates[0]);
-      const end = new Date(dates[dates.length - 1]);
-      const filledDates = [];
-      const filledTotals = [];
-    
-      let lastKnownValues = {};
-      let current = new Date(start);
-    
-      while (current <= end) {
-        const dateStr = current.toISOString().split('T')[0];
-        
-        // Update last known position values if explicit transaction exists on dateStr
-        if (rawHistory[dateStr]) {
-          Object.assign(lastKnownValues, rawHistory[dateStr]);
-        }
-    
-        let daySum = 0;
-        selectedTickers.forEach(t => {
-          daySum += (lastKnownValues[t] || 0);
-        });
-    
-        filledDates.push(dateStr);
-        filledTotals.push(daySum);
-    
-        current.setDate(current.getDate() + 1);
-      }
-    
-      return { filledDates, filledTotals };
-    }
     function updateDashboard() {
       if (!rawPortfolioData || !rawPortfolioData.history) return;
 
@@ -496,17 +490,11 @@
         dates = dates.filter(d => new Date(d) >= cutoff);
       }
 
-      const totals = dates.map(d => {
-        const dayData = rawPortfolioData.history[d] || {};
-        let daySum = 0;
-        selectedTickers.forEach(t => {
-          daySum += (dayData[t] || 0);
-        });
-        return daySum;
-      });
+      // Smooth step-up lines by filling sparse daily dates
+      const { filledDates, filledTotals } = fillMissingDates(dates, rawPortfolioData.history, selectedTickers);
 
-      const latestTotal = totals.length > 0 ? totals[totals.length - 1] : 0;
-      const initialTotal = totals.length > 0 ? totals[0] : 0;
+      const latestTotal = filledTotals.length > 0 ? filledTotals[filledTotals.length - 1] : 0;
+      const initialTotal = filledTotals.length > 0 ? filledTotals[0] : 0;
       const periodChange = latestTotal - initialTotal;
       const periodPct = initialTotal > 0 ? (periodChange / initialTotal) * 100 : 0;
 
@@ -517,8 +505,40 @@
       changeEl.innerText = `${sign}$${periodChange.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${periodPct.toFixed(2)}%)`;
       changeEl.className = periodChange >= 0 ? 'text-2xl md:text-3xl font-extrabold mt-1 text-emerald-400' : 'text-2xl md:text-3xl font-extrabold mt-1 text-rose-400';
 
-      renderChart(dates, totals);
+      renderChart(filledDates, filledTotals);
       renderHoldingsTable(latestTotal);
+    }
+
+    function fillMissingDates(dates, rawHistory, selectedTickers) {
+      if (dates.length === 0) return { filledDates: [], filledTotals: [] };
+
+      const start = new Date(dates[0]);
+      const end = new Date(dates[dates.length - 1]);
+      const filledDates = [];
+      const filledTotals = [];
+
+      let lastKnownValues = {};
+      let current = new Date(start);
+
+      while (current <= end) {
+        const dateStr = current.toISOString().split('T')[0];
+        
+        if (rawHistory[dateStr]) {
+          Object.assign(lastKnownValues, rawHistory[dateStr]);
+        }
+
+        let daySum = 0;
+        selectedTickers.forEach(t => {
+          daySum += (lastKnownValues[t] || 0);
+        });
+
+        filledDates.push(dateStr);
+        filledTotals.push(daySum);
+
+        current.setDate(current.getDate() + 1);
+      }
+
+      return { filledDates, filledTotals };
     }
 
     function renderChart(dates, totals) {
@@ -540,9 +560,9 @@
             borderColor: '#10b981',
             backgroundColor: 'rgba(16, 185, 129, 0.1)',
             fill: true,
-            tension: 0.2,
-            pointRadius: 3,
-            pointHoverRadius: 7,
+            tension: 0.1,
+            pointRadius: 0,
+            pointHoverRadius: 6,
             pointBackgroundColor: '#10b981'
           }]
         },
@@ -560,7 +580,7 @@
             }
           },
           scales: {
-            x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
+            x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', maxTicksLimit: 12 } },
             y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', callback: v => '$' + v.toLocaleString() } }
           }
         }
