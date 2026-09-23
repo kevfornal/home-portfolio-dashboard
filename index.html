@@ -520,6 +520,37 @@
     });
   }
 
+  async function resetPortfolioData() {
+    const confirmed = confirm(
+      "WARNING: This will permanently erase all portfolio holdings, history, and tickers from your Cloudflare D1 database. Are you sure you want to start fresh?"
+    );
+    
+    if (!confirmed) return;
+  
+    const today = new Date().toISOString().split('T')[0];
+  
+    // Re-initialize portfolio object with a clean slate
+    rawPortfolioData = {
+      last_updated: today,
+      positions: {},
+      history: {
+        [today]: {}
+      }
+    };
+  
+    // Clear UI state variables
+    selectedTickers.clear();
+  
+    // Rebuild UI components
+    buildStockCheckboxes();
+    updateDashboardUI();
+  
+    // Persist the clean state to Cloudflare D1
+    await savePortfolioData();
+  
+    alert("Portfolio reset successfully! You can now start recording your actual positions.");
+  }
+  
   function toggleTicker(ticker) {
     if (selectedTickers.has(ticker)) {
       selectedTickers.delete(ticker);
