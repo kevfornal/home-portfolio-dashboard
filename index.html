@@ -251,16 +251,6 @@
       }
     }
 
-    // ... end of unlockDashboard()
-        document.getElementById('lastUpdated').innerText = `Last Sync: ${rawPortfolioData.last_updated || 'N/A'}`;
-        updateDashboardUI();
-      } catch (e) {
-        console.error(e);
-        errorEl.innerText = e.message || "Invalid Key. Decryption failed.";
-        errorEl.classList.remove('hidden');
-      }
-    }
-
     // === PLACE HERE: Between unlockDashboard() and updateDashboardUI() ===
     async function savePortfolioData() {
       if (!currentPassphrase || !rawPortfolioData) return;
