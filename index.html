@@ -160,487 +160,467 @@
 
   </div>
 
-  <script>
-    let rawPortfolioData = null;
-    let availableTickers = [];
-    let selectedTickers = new Set();
-    let selectedTimeframe = 'ALL';
-    let chartInstance = null;
-    let currentEntryMode = 'value'; // 'value' or 'qty'
-    let currentPassphrase = ""; // Session passphrase memory
+<script>
+  let currentPassphrase = "";
+  let encContainer = null;
+  let rawPortfolioData = null;
+  let chartInstance = null;
+  let selectedTimeframe = "ALL";
+  let activeEntryMode = "value";
+  let selectedTickers = new Set();
 
-    function setDefaultDate() {
-      const dateInput = document.getElementById('newDateInput');
-      if (dateInput && !dateInput.value) {
-        dateInput.value = new Date().toISOString().split('T')[0];
-      }
+  // Initialize Default Date Input
+  document.getElementById('newDateInput').value = new Date().toISOString().split('T')[0];
+
+  // --- 1. DECRYPTION & UNLOCK ---
+  async function unlockDashboard() {
+    const passphraseInput = document.getElementById('passphraseInput').value;
+    const errorEl = document.getElementById('authError');
+    errorEl.classList.add('hidden');
+
+    if (!passphraseInput) {
+      errorEl.innerText = "Please enter a passphrase.";
+      errorEl.classList.remove('hidden');
+      return;
     }
 
-    function refreshAvailableTickers() {
-      const tickerSet = new Set();
-      Object.values(rawPortfolioData.history || {}).forEach(day => {
-        Object.keys(day).forEach(t => tickerSet.add(t));
-      });
-      
-      const previousSelections = new Set(selectedTickers);
-      availableTickers = Array.from(tickerSet);
-      
-      availableTickers.forEach(t => {
-        if (!previousSelections.has(t) && previousSelections.size > 0) {
-          selectedTickers.add(t);
-        } else if (previousSelections.size === 0) {
-          selectedTickers.add(t);
-        }
-      });
-    }
-
-    async function unlockDashboard() {
-      const passphrase = document.getElementById('passphraseInput').value;
-      const errorEl = document.getElementById('authError');
-      errorEl.classList.add('hidden');
-
+    try {
+      // Fetch from D1 endpoint with static fallback
       try {
-        let encContainer = null;
+        const apiRes = await fetch('/api/portfolio');
+        const contentType = apiRes.headers.get('content-type');
+        if (apiRes.ok && contentType && contentType.includes('application/json')) {
+          encContainer = await apiRes.json();
+        }
+      } catch (apiErr) {
+        console.warn("D1 fetch unavailable, falling back to static file.");
+      }
 
-       // Directly fetch the static encrypted data file
+      if (!encContainer) {
         const res = await fetch('./portfolio_data.enc');
-        if (!res.ok) throw new Error("Could not find portfolio_data.enc file");
+        if (!res.ok) throw new Error("Could not find portfolio data payload.");
         encContainer = await res.json();
-        
-        const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
-        const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
-        const ciphertext = encContainer.ciphertext;
-
-        const key = CryptoJS.PBKDF2(passphrase, salt, {
-          keySize: 256 / 32,
-          iterations: 1000,
-          hasher: CryptoJS.algo.SHA256
-        });
-
-        const decrypted = CryptoJS.AES.decrypt(ciphertext, key, {
-          iv: iv,
-          mode: CryptoJS.mode.CBC,
-          padding: CryptoJS.pad.Pkcs7
-        });
-
-        const jsonString = decrypted.toString(CryptoJS.enc.Utf8);
-        if (!jsonString) throw new Error("Decryption failed - incorrect passphrase.");
-
-        rawPortfolioData = JSON.parse(jsonString);
-        currentPassphrase = passphrase; // Save valid passphrase to active memory
-        
-        if (!rawPortfolioData.history) rawPortfolioData.history = {};
-
-        if (!rawPortfolioData.history["2020-03-11"]) {
-          rawPortfolioData.history["2020-03-11"] = { "Cash Account": 0 };
-        }
-
-        document.getElementById('authModal').classList.add('hidden');
-        document.getElementById('dashboardContent').classList.remove('hidden');
-        document.getElementById('lastUpdated').innerText = `Last Sync: ${rawPortfolioData.last_updated || 'N/A'}`;
-        
-        setDefaultDate();
-        refreshAvailableTickers();
-        renderTickerCheckboxes();
-        updateDashboard();
-
-      } catch (e) {
-        console.error(e);
-        errorEl.innerText = e.message || "Invalid Key. Decryption failed.";
-        errorEl.classList.remove('hidden');
-      }
-    }
-
-    // ====================================================================
-
-    function setEntryMode(mode) {
-      currentEntryMode = mode;
-      const valueBtn = document.getElementById('modeValueBtn');
-      const qtyBtn = document.getElementById('modeQtyBtn');
-      const labelA = document.getElementById('inputLabelA');
-      const inputA = document.getElementById('inputA');
-      const priceWrapper = document.getElementById('priceInputWrapper');
-
-      if (mode === 'value') {
-        valueBtn.className = 'px-3 py-1 font-semibold rounded bg-emerald-600 text-white transition';
-        qtyBtn.className = 'px-3 py-1 font-semibold rounded text-slate-400 hover:text-white transition';
-        labelA.innerText = 'Total Value ($)';
-        inputA.placeholder = "$ Amount";
-        priceWrapper.classList.add('hidden');
-      } else {
-        qtyBtn.className = 'px-3 py-1 font-semibold rounded bg-emerald-600 text-white transition';
-        valueBtn.className = 'px-3 py-1 font-semibold rounded text-slate-400 hover:text-white transition';
-        labelA.innerText = 'Quantity Shares';
-        inputA.placeholder = 'e.g. 10.5';
-        priceWrapper.classList.remove('hidden');
-      }
-    }
-
-    async function addCustomTicker() {
-      const symbolInput = document.getElementById('newTickerInput');
-      const dateInput = document.getElementById('newDateInput');
-      const inputA = document.getElementById('inputA');
-      const inputB = document.getElementById('inputB');
-      const actionType = document.getElementById('actionType').value;
-
-      const ticker = symbolInput.value.trim().toUpperCase();
-      const dateVal = dateInput.value || new Date().toISOString().split('T')[0];
-      const valA = parseFloat(inputA.value);
-
-      if (!ticker || isNaN(valA)) {
-        alert("Please enter a valid ticker symbol and numeric value.");
-        return;
       }
 
-      let transactionValue = 0;
-      if (currentEntryMode === 'value') {
-        transactionValue = valA;
-      } else {
-        const unitPrice = parseFloat(inputB.value);
-        if (isNaN(unitPrice)) {
-          alert("Please enter a valid unit price.");
-          return;
-        }
-        transactionValue = valA * unitPrice;
-      }
+      // Decrypt Payload
+      const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
+      const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
 
-      if (!rawPortfolioData.history[dateVal]) {
-        rawPortfolioData.history[dateVal] = {};
-      }
-
-      // 1. Ensure the target date exists and inherits existing holdings from previous date
-      const dates = Object.keys(rawPortfolioData.history || {}).sort();
-      
-      if (!rawPortfolioData.history[dateVal]) {
-        // Find latest date prior to dateVal to inherit baseline holdings
-        const priorDates = dates.filter(d => d < dateVal);
-        const lastPriorDate = priorDates[priorDates.length - 1];
-        
-        // Copy forward previous positions so other stocks don't zero out
-        rawPortfolioData.history[dateVal] = lastPriorDate 
-          ? { ...rawPortfolioData.history[lastPriorDate] } 
-          : {};
-      }
-
-      // Re-fetch sorted dates including newly inserted dateVal
-      const updatedDates = Object.keys(rawPortfolioData.history).sort();
-      const targetIndex = updatedDates.indexOf(dateVal);
-
-      // 2. Calculate baseline value prior to targetIndex
-      let previousVal = 0;
-      if (targetIndex > 0) {
-        const prevDate = updatedDates[targetIndex - 1];
-        previousVal = rawPortfolioData.history[prevDate][ticker] || 0;
-      }
-
-      // 3. Propagate the change forward across all subsequent dates
-      for (let i = targetIndex; i < updatedDates.length; i++) {
-        const d = updatedDates[i];
-        
-        // Ensure day object exists and carries forward prior day's full portfolio map
-        if (!rawPortfolioData.history[d]) {
-          const prevD = updatedDates[i - 1];
-          rawPortfolioData.history[d] = prevD ? { ...rawPortfolioData.history[prevD] } : {};
-        }
-
-        const currentDayVal = rawPortfolioData.history[d][ticker] !== undefined 
-          ? rawPortfolioData.history[d][ticker] 
-          : previousVal;
-
-        if (actionType === 'SET') {
-          rawPortfolioData.history[d][ticker] = transactionValue;
-        } else if (actionType === 'BUY') {
-          rawPortfolioData.history[d][ticker] = currentDayVal + transactionValue;
-        } else if (actionType === 'SELL') {
-          rawPortfolioData.history[d][ticker] = Math.max(0, currentDayVal - transactionValue);
-        }
-      }
-
-      // 4. Sync the latest historical snapshot to rawPortfolioData.positions for UI rendering
-      const latestDate = updatedDates[updatedDates.length - 1];
-      rawPortfolioData.positions = { ...rawPortfolioData.history[latestDate] };
-
-      symbolInput.value = '';
-      inputA.value = '';
-      inputB.value = '';
-
-      refreshAvailableTickers();
-      selectedTickers.add(ticker);
-      renderTickerCheckboxes();
-      updateDashboard();
-
-      // Persist changes to Cloudflare D1
-      await savePortfolioData();
-    }
-
-    async function deleteTicker(ticker) {
-      if (!confirm(`Are you sure you want to remove ${ticker}?`)) return;
-
-      Object.keys(rawPortfolioData.history).forEach(d => {
-        delete rawPortfolioData.history[d][ticker];
-      });
-
-      selectedTickers.delete(ticker);
-      refreshAvailableTickers();
-      renderTickerCheckboxes();
-      updateDashboard();
-
-      // Persist changes to Cloudflare D1
-      await savePortfolioData();
-    }
-
-    function renderTickerCheckboxes() {
-      const container = document.getElementById('stockCheckboxes');
-      container.innerHTML = '';
-
-      availableTickers.forEach(ticker => {
-        const label = document.createElement('label');
-        label.className = `flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer select-none transition ${
-          selectedTickers.has(ticker) 
-            ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300' 
-            : 'bg-slate-950 border-slate-800 text-slate-500'
-        }`;
-        
-        label.innerHTML = `
-          <input type="checkbox" value="${ticker}" ${selectedTickers.has(ticker) ? 'checked' : ''} 
-                 onchange="toggleTicker('${ticker}')" class="hidden">
-          <span>${ticker}</span>
-        `;
-        container.appendChild(label);
-      });
-    }
-
-    function toggleTicker(ticker) {
-      if (selectedTickers.has(ticker)) {
-        selectedTickers.delete(ticker);
-      } else {
-        selectedTickers.add(ticker);
-      }
-      renderTickerCheckboxes();
-      updateDashboard();
-
-      // Trigger save to Cloudflare D1:
-      savePortfolioData();
-    }
-
-    function selectAllStocks(shouldSelect) {
-      if (shouldSelect) {
-        selectedTickers = new Set(availableTickers);
-      } else {
-        selectedTickers.clear();
-      }
-      renderTickerCheckboxes();
-      updateDashboard();
-    }
-
-    function setTimeframe(tf) {
-      selectedTimeframe = tf;
-      document.querySelectorAll('.tf-btn').forEach(btn => {
-        if (btn.getAttribute('data-tf') === tf) {
-          btn.className = 'tf-btn px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-md transition';
-        } else {
-          btn.className = 'tf-btn px-3 py-1.5 text-xs font-semibold rounded-md text-slate-400 hover:text-white transition';
-        }
-      });
-      updateDashboard();
-    }
-
-    function updateDashboard() {
-      if (!rawPortfolioData || !rawPortfolioData.history) return;
-
-      let dates = Object.keys(rawPortfolioData.history).sort();
-      if (dates.length === 0) return;
-
-      if (selectedTimeframe !== 'ALL') {
-        const lastDate = new Date(dates[dates.length - 1]);
-        let cutoff = new Date(lastDate);
-        if (selectedTimeframe === '1M') cutoff.setMonth(cutoff.getMonth() - 1);
-        if (selectedTimeframe === '6M') cutoff.setMonth(cutoff.getMonth() - 6);
-        if (selectedTimeframe === '1Y') cutoff.setFullYear(cutoff.getFullYear() - 1);
-
-        dates = dates.filter(d => new Date(d) >= cutoff);
-      }
-
-      // Smooth step-up lines by filling sparse daily dates
-      const { filledDates, filledTotals } = fillMissingDates(dates, rawPortfolioData.history, selectedTickers);
-
-      const latestTotal = filledTotals.length > 0 ? filledTotals[filledTotals.length - 1] : 0;
-      const initialTotal = filledTotals.length > 0 ? filledTotals[0] : 0;
-      const periodChange = latestTotal - initialTotal;
-      const periodPct = initialTotal > 0 ? (periodChange / initialTotal) * 100 : 0;
-
-      document.getElementById('totalValue').innerText = `$${latestTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-      
-      const changeEl = document.getElementById('dailyChange');
-      const sign = periodChange >= 0 ? '+' : '';
-      changeEl.innerText = `${sign}$${periodChange.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${sign}${periodPct.toFixed(2)}%)`;
-      changeEl.className = periodChange >= 0 ? 'text-2xl md:text-3xl font-extrabold mt-1 text-emerald-400' : 'text-2xl md:text-3xl font-extrabold mt-1 text-rose-400';
-
-      renderChart(filledDates, filledTotals);
-      renderHoldingsTable(latestTotal);
-    }
-
-    // Make sure savePortfolioData handles errors gracefully without destroying rawPortfolioData state
-    async function savePortfolioData() {
-      if (!rawPortfolioData || !currentPassphrase) return;
-    
-      rawPortfolioData.last_updated = new Date().toISOString().split('T')[0];
-    
-      const jsonString = JSON.stringify(rawPortfolioData);
-      const salt = CryptoJS.lib.WordArray.random(128 / 8);
-      const iv = CryptoJS.lib.WordArray.random(128 / 8);
-    
-      const key = CryptoJS.PBKDF2(currentPassphrase, salt, {
+      const key = CryptoJS.PBKDF2(passphraseInput, salt, {
         keySize: 256 / 32,
         iterations: 1000,
         hasher: CryptoJS.algo.SHA256
       });
-    
-      const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
+
+      const decrypted = CryptoJS.AES.decrypt(encContainer.ciphertext, key, {
         iv: iv,
         mode: CryptoJS.mode.CBC,
         padding: CryptoJS.pad.Pkcs7
       });
-    
-      const payload = JSON.stringify({
-        salt: CryptoJS.enc.Base64.stringify(salt),
-        iv: CryptoJS.enc.Base64.stringify(iv),
-        ciphertext: encrypted.toString()
+
+      const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
+      if (!decryptedText) throw new Error("Invalid Key. Decryption failed.");
+
+      rawPortfolioData = JSON.parse(decryptedText);
+      currentPassphrase = passphraseInput;
+
+      // Initialize selected tickers set with all available assets
+      const allTickers = getAllTickers();
+      selectedTickers = new Set(allTickers);
+
+      // Render UI & Transition View
+      document.getElementById('authModal').classList.add('hidden');
+      document.getElementById('dashboardContent').classList.remove('hidden');
+      document.getElementById('lastUpdated').innerText = `Last Sync: ${rawPortfolioData.last_updated || 'N/A'}`;
+
+      buildStockCheckboxes();
+      updateDashboardUI();
+    } catch (e) {
+      console.error(e);
+      errorEl.innerText = e.message || "Invalid Key. Decryption failed.";
+      errorEl.classList.remove('hidden');
+    }
+  }
+
+  // --- 2. PERSISTENCE TO CLOUDFLARE D1 ---
+  async function savePortfolioData() {
+    if (!rawPortfolioData || !currentPassphrase) return;
+
+    rawPortfolioData.last_updated = new Date().toISOString().split('T')[0];
+
+    const jsonString = JSON.stringify(rawPortfolioData);
+    const salt = CryptoJS.lib.WordArray.random(128 / 8);
+    const iv = CryptoJS.lib.WordArray.random(128 / 8);
+
+    const key = CryptoJS.PBKDF2(currentPassphrase, salt, {
+      keySize: 256 / 32,
+      iterations: 1000,
+      hasher: CryptoJS.algo.SHA256
+    });
+
+    const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
+      iv: iv,
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7
+    });
+
+    const payload = JSON.stringify({
+      salt: CryptoJS.enc.Base64.stringify(salt),
+      iv: CryptoJS.enc.Base64.stringify(iv),
+      ciphertext: encrypted.toString()
+    });
+
+    try {
+      const res = await fetch('/api/portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload
       });
-    
-      try {
-        const res = await fetch('/api/portfolio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: payload
-        });
-    
-        const resData = await res.json();
-    
-        if (!res.ok) {
-          console.error("D1 Server Error details:", resData);
-          alert("Database save failed: " + (resData.error || "Unknown server error"));
-          // Refresh state from backup if save fails to avoid local memory corruption
-          location.reload(); 
-        } else {
-          console.log("Successfully persisted to Cloudflare D1!");
-        }
-      } catch (err) {
-        console.error("D1 save network error:", err);
+
+      const resData = await res.json();
+      if (!res.ok) {
+        console.error("D1 save failed:", resData);
+        alert("Database save failed: " + (resData.error || "Unknown server error"));
+      } else {
+        console.log("Successfully persisted update to Cloudflare D1!");
       }
+    } catch (err) {
+      console.error("D1 network error:", err);
     }
-    function fillMissingDates(dates, rawHistory, selectedTickers) {
-      if (dates.length === 0) return { filledDates: [], filledTotals: [] };
+  }
 
-      const start = new Date(dates[0]);
-      const end = new Date(dates[dates.length - 1]);
-      const filledDates = [];
-      const filledTotals = [];
+  // --- 3. TRANSACTION HANDLING & FORWARD PROPAGATION ---
+  function setEntryMode(mode) {
+    activeEntryMode = mode;
+    const valueBtn = document.getElementById('modeValueBtn');
+    const qtyBtn = document.getElementById('modeQtyBtn');
+    const priceWrapper = document.getElementById('priceInputWrapper');
+    const labelA = document.getElementById('inputLabelA');
 
-      let lastKnownValues = {};
-      let current = new Date(start);
+    if (mode === 'value') {
+      valueBtn.className = "px-3 py-1 font-semibold rounded bg-emerald-600 text-white transition";
+      qtyBtn.className = "px-3 py-1 font-semibold rounded text-slate-400 hover:text-white transition";
+      priceWrapper.classList.add('hidden');
+      labelA.innerText = "Total Value ($)";
+    } else {
+      qtyBtn.className = "px-3 py-1 font-semibold rounded bg-emerald-600 text-white transition";
+      valueBtn.className = "px-3 py-1 font-semibold rounded text-slate-400 hover:text-white transition";
+      priceWrapper.classList.remove('hidden');
+      labelA.innerText = "Quantity / Shares";
+    }
+  }
 
-      while (current <= end) {
-        const dateStr = current.toISOString().split('T')[0];
-        
-        if (rawHistory[dateStr]) {
-          Object.assign(lastKnownValues, rawHistory[dateStr]);
-        }
+  function addCustomTicker() {
+    const ticker = document.getElementById('newTickerInput').value.trim().toUpperCase();
+    const dateVal = document.getElementById('newDateInput').value;
+    const actionType = document.getElementById('actionType').value;
+    const valA = parseFloat(document.getElementById('inputA').value);
+    const valB = parseFloat(document.getElementById('inputB').value);
 
-        let daySum = 0;
-        selectedTickers.forEach(t => {
-          daySum += (lastKnownValues[t] || 0);
-        });
-
-        filledDates.push(dateStr);
-        filledTotals.push(daySum);
-
-        current.setDate(current.getDate() + 1);
-      }
-
-      return { filledDates, filledTotals };
+    if (!ticker || !dateVal || isNaN(valA)) {
+      alert("Please fill in Ticker, Date, and Amount fields.");
+      return;
     }
 
-    function renderChart(dates, totals) {
-      const canvas = document.getElementById('portfolioChart');
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
+    let transactionValue = 0;
+    if (activeEntryMode === 'qty') {
+      if (isNaN(valB)) {
+        alert("Please enter a valid share price.");
+        return;
+      }
+      transactionValue = valA * valB;
+    } else {
+      transactionValue = valA;
+    }
 
-      if (chartInstance) {
-        chartInstance.destroy();
+    if (!rawPortfolioData.history) {
+      rawPortfolioData.history = {};
+    }
+
+    const dates = Object.keys(rawPortfolioData.history).sort();
+
+    // 1. Ensure target date exists and inherits existing holdings
+    if (!rawPortfolioData.history[dateVal]) {
+      const priorDates = dates.filter(d => d < dateVal);
+      const lastPriorDate = priorDates[priorDates.length - 1];
+
+      rawPortfolioData.history[dateVal] = lastPriorDate
+        ? { ...rawPortfolioData.history[lastPriorDate] }
+        : {};
+    }
+
+    const updatedDates = Object.keys(rawPortfolioData.history).sort();
+    const targetIndex = updatedDates.indexOf(dateVal);
+
+    // 2. Find baseline value before targetIndex
+    let previousVal = 0;
+    if (targetIndex > 0) {
+      const prevDate = updatedDates[targetIndex - 1];
+      previousVal = rawPortfolioData.history[prevDate][ticker] || 0;
+    }
+
+    // 3. Propagate changes forward without overwriting other tickers
+    for (let i = targetIndex; i < updatedDates.length; i++) {
+      const d = updatedDates[i];
+
+      if (!rawPortfolioData.history[d]) {
+        const prevD = updatedDates[i - 1];
+        rawPortfolioData.history[d] = prevD ? { ...rawPortfolioData.history[prevD] } : {};
       }
 
-      chartInstance = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: dates,
-          datasets: [{
-            label: 'Selected Portfolio Value ($)',
-            data: totals,
-            borderColor: '#10b981',
-            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-            fill: true,
-            tension: 0.1,
-            pointRadius: 0,
-            pointHoverRadius: 6,
-            pointBackgroundColor: '#10b981'
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode: 'index', intersect: false },
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              enabled: true,
-              callbacks: {
-                label: (ctx) => ` Value: $${(ctx.parsed.y || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
-              }
+      const currentDayVal = rawPortfolioData.history[d][ticker] !== undefined
+        ? rawPortfolioData.history[d][ticker]
+        : previousVal;
+
+      if (actionType === 'SET') {
+        rawPortfolioData.history[d][ticker] = transactionValue;
+      } else if (actionType === 'BUY') {
+        rawPortfolioData.history[d][ticker] = currentDayVal + transactionValue;
+      } else if (actionType === 'SELL') {
+        rawPortfolioData.history[d][ticker] = Math.max(0, currentDayVal - transactionValue);
+      }
+    }
+
+    // 4. Update current positions snapshot
+    const latestDate = updatedDates[updatedDates.length - 1];
+    rawPortfolioData.positions = { ...rawPortfolioData.history[latestDate] };
+
+    // Auto-select new ticker if not already tracked
+    selectedTickers.add(ticker);
+
+    // Reset Inputs
+    document.getElementById('newTickerInput').value = '';
+    document.getElementById('inputA').value = '';
+    document.getElementById('inputB').value = '';
+
+    buildStockCheckboxes();
+    updateDashboardUI();
+    savePortfolioData();
+  }
+
+  // --- 4. UI RENDERING & CHARTS ---
+  function getAllTickers() {
+    const tickers = new Set();
+    if (rawPortfolioData.positions) {
+      Object.keys(rawPortfolioData.positions).forEach(t => tickers.add(t));
+    }
+    if (rawPortfolioData.history) {
+      Object.values(rawPortfolioData.history).forEach(snapshot => {
+        Object.keys(snapshot).forEach(t => tickers.add(t));
+      });
+    }
+    return Array.from(tickers).sort();
+  }
+
+  function buildStockCheckboxes() {
+    const container = document.getElementById('stockCheckboxes');
+    container.innerHTML = '';
+    const tickers = getAllTickers();
+
+    tickers.forEach(ticker => {
+      const isChecked = selectedTickers.has(ticker);
+      const badge = document.createElement('label');
+      badge.className = `flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-semibold cursor-pointer border transition-all ${
+        isChecked 
+          ? 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300' 
+          : 'bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700'
+      }`;
+
+      badge.innerHTML = `
+        <input type="checkbox" value="${ticker}" ${isChecked ? 'checked' : ''} 
+               onchange="toggleTicker('${ticker}')" class="hidden">
+        <span>${ticker}</span>
+      `;
+      container.appendChild(badge);
+    });
+  }
+
+  function toggleTicker(ticker) {
+    if (selectedTickers.has(ticker)) {
+      selectedTickers.delete(ticker);
+    } else {
+      selectedTickers.add(ticker);
+    }
+    buildStockCheckboxes();
+    updateDashboardUI();
+  }
+
+  function selectAllStocks(shouldSelect) {
+    if (shouldSelect) {
+      selectedTickers = new Set(getAllTickers());
+    } else {
+      selectedTickers.clear();
+    }
+    buildStockCheckboxes();
+    updateDashboardUI();
+  }
+
+  function setTimeframe(tf) {
+    selectedTimeframe = tf;
+    document.querySelectorAll('.tf-btn').forEach(btn => {
+      if (btn.getAttribute('data-tf') === tf) {
+        btn.className = "tf-btn px-3 py-1.5 text-xs font-semibold bg-emerald-600 text-white rounded-md transition";
+      } else {
+        btn.className = "tf-btn px-3 py-1.5 text-xs font-semibold rounded-md text-slate-400 hover:text-white transition";
+      }
+    });
+    updateDashboardUI();
+  }
+
+  function filterDatesByTimeframe(dates) {
+    if (!dates || dates.length === 0) return [];
+    if (selectedTimeframe === 'ALL') return dates;
+
+    const latestDate = new Date(dates[dates.length - 1]);
+    const cutoffDate = new Date(latestDate);
+
+    if (selectedTimeframe === '1M') cutoffDate.setMonth(cutoffDate.getMonth() - 1);
+    if (selectedTimeframe === '6M') cutoffDate.setMonth(cutoffDate.getMonth() - 6);
+    if (selectedTimeframe === '1Y') cutoffDate.setFullYear(cutoffDate.getFullYear() - 1);
+
+    const cutoffStr = cutoffDate.toISOString().split('T')[0];
+    return dates.filter(d => d >= cutoffStr);
+  }
+
+  function updateDashboardUI() {
+    if (!rawPortfolioData || !rawPortfolioData.history) return;
+
+    const allDates = Object.keys(rawPortfolioData.history).sort();
+    const activeDates = filterDatesByTimeframe(allDates);
+
+    const chartLabels = activeDates;
+    const chartValues = [];
+
+    // Calculate aggregated value per date based on active stock selection
+    activeDates.forEach(dateStr => {
+      const daySnapshot = rawPortfolioData.history[dateStr] || {};
+      let dayTotal = 0;
+
+      Object.entries(daySnapshot).forEach(([ticker, val]) => {
+        if (selectedTickers.has(ticker)) {
+          dayTotal += val;
+        }
+      });
+
+      chartValues.push(dayTotal);
+    });
+
+    // Update KPI Cards
+    const latestTotal = chartValues.length > 0 ? chartValues[chartValues.length - 1] : 0;
+    const startTotal = chartValues.length > 0 ? chartValues[0] : 0;
+    const periodDiff = latestTotal - startTotal;
+
+    document.getElementById('totalValue').innerText = `$${latestTotal.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+    const changeEl = document.getElementById('dailyChange');
+    const isPositive = periodDiff >= 0;
+    changeEl.innerText = `${isPositive ? '+' : ''}$${periodDiff.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    changeEl.className = `text-2xl md:text-3xl font-extrabold mt-1 ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`;
+
+    // Render Performance Line Chart
+    renderChart(chartLabels, chartValues);
+
+    // Update Holdings Table
+    renderHoldingsTable(latestTotal);
+  }
+
+  function renderChart(labels, values) {
+    const ctx = document.getElementById('portfolioChart').getContext('2d');
+    if (chartInstance) {
+      chartInstance.destroy();
+    }
+
+    chartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Portfolio Value ($)',
+          data: values,
+          borderColor: '#10b981',
+          backgroundColor: 'rgba(16, 185, 129, 0.1)',
+          borderWidth: 2,
+          fill: true,
+          tension: 0.2,
+          pointRadius: labels.length > 60 ? 0 : 3,
+          pointHoverRadius: 5
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (context) => ` Total: $${context.raw.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
             }
+          }
+        },
+        scales: {
+          x: {
+            grid: { color: 'rgba(51, 65, 85, 0.3)' },
+            ticks: { color: '#94a3b8', font: { size: 11 } }
           },
-          scales: {
-            x: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', maxTicksLimit: 12 } },
-            y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8', callback: v => '$' + v.toLocaleString() } }
+          y: {
+            grid: { color: 'rgba(51, 65, 85, 0.3)' },
+            ticks: {
+              color: '#94a3b8',
+              font: { size: 11 },
+              callback: (val) => '$' + val.toLocaleString()
+            }
           }
         }
+      }
+    });
+  }
+
+  function renderHoldingsTable(totalValue) {
+    const tbody = document.getElementById('holdingsTableBody');
+    tbody.innerHTML = '';
+
+    if (!rawPortfolioData.positions) return;
+
+    const sortedPositions = Object.entries(rawPortfolioData.positions)
+      .sort((a, b) => b[1] - a[1]);
+
+    sortedPositions.forEach(([ticker, val]) => {
+      const isChecked = selectedTickers.has(ticker);
+      const share = totalValue > 0 && isChecked ? ((val / totalValue) * 100).toFixed(1) : '0.0';
+
+      const row = document.createElement('tr');
+      row.className = `hover:bg-slate-800/40 transition-colors ${!isChecked ? 'opacity-40' : ''}`;
+
+      row.innerHTML = `
+        <td class="py-3 px-4 font-bold text-slate-200">${ticker}</td>
+        <td class="py-3 px-4 text-right font-medium text-slate-100">$${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+        <td class="py-3 px-4 text-right text-slate-400">${share}%</td>
+        <td class="py-3 px-4 text-center">
+          <button onclick="removePosition('${ticker}')" class="text-xs text-rose-400 hover:text-rose-300 hover:underline">Remove</button>
+        </td>
+      `;
+      tbody.appendChild(row);
+    });
+  }
+
+  function removePosition(ticker) {
+    if (!confirm(`Are you sure you want to remove position ${ticker}?`)) return;
+
+    if (rawPortfolioData.positions) delete rawPortfolioData.positions[ticker];
+    
+    // Remove ticker from future history entries
+    if (rawPortfolioData.history) {
+      Object.keys(rawPortfolioData.history).forEach(d => {
+        delete rawPortfolioData.history[d][ticker];
       });
     }
 
-    function renderHoldingsTable(totalPortfolioValue) {
-      const tableBody = document.getElementById('holdingsTableBody');
-      if (!tableBody) return;
-      tableBody.innerHTML = '';
+    selectedTickers.delete(ticker);
+    buildStockCheckboxes();
+    updateDashboardUI();
+    savePortfolioData();
+  }
+</script>
 
-      const dates = Object.keys(rawPortfolioData.history || {}).sort();
-      if (dates.length === 0) return;
-      const latestDay = rawPortfolioData.history[dates[dates.length - 1]] || {};
-
-      availableTickers.forEach(ticker => {
-        const val = latestDay[ticker] || 0;
-        const isSelected = selectedTickers.has(ticker);
-        const weight = totalPortfolioValue > 0 && isSelected ? (val / totalPortfolioValue) * 100 : 0;
-
-        const row = document.createElement('tr');
-        row.className = isSelected ? 'hover:bg-slate-800/40' : 'opacity-40 hover:bg-slate-800/20';
-        row.innerHTML = `
-          <td class="py-3 px-4 font-bold text-slate-200 flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full ${isSelected ? 'bg-emerald-400' : 'bg-slate-600'}"></span>
-            ${ticker}
-          </td>
-          <td class="py-3 px-4 text-right text-slate-300 font-mono">$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          <td class="py-3 px-4 text-righupdt text-slate-400 font-mono">${isSelected ? weight.toFixed(2) + '%' : 'Excluded'}</td>
-          <td class="py-3 px-4 text-center">
-            <button onclick="deleteTicker('${ticker}')" title="Delete ${ticker}" class="text-slate-500 hover:text-rose-400 transition-colors p-1">
-              <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </td>
-        `;
-        tableBody.appendChild(row);
-      });
-    }
-  </script>
 </body>
 </html>
