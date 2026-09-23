@@ -445,6 +445,9 @@
       }
       renderTickerCheckboxes();
       updateDashboard();
+
+      // Trigger save to Cloudflare D1:
+      savePortfolioData();
     }
 
     function selectAllStocks(shouldSelect) {
