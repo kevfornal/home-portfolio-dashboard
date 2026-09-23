@@ -202,23 +202,10 @@
       try {
         let encContainer = null;
 
-        // Try fetching from Cloudflare D1 first
-        try {
-          const apiRes = await fetch('/api/portfolio');
-          const contentType = apiRes.headers.get('content-type');
-          if (apiRes.ok && contentType && contentType.includes('application/json')) {
-            encContainer = await apiRes.json();
-          }
-        } catch (apiErr) {
-          console.warn("D1 fetch skipped/failed, falling back to static file.");
-        }
-
-        // Fall back to static portfolio_data.enc if D1 is empty or unavailable
-        if (!encContainer) {
-          const res = await fetch('./portfolio_data.enc');
-          if (!res.ok) throw new Error("Could not find portfolio data payload");
-          encContainer = await res.json();
-        }
+       // Directly fetch the static encrypted data file
+        const res = await fetch('./portfolio_data.enc');
+        if (!res.ok) throw new Error("Could not find portfolio_data.enc file");
+        encContainer = await res.json();
         
         const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
         const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
