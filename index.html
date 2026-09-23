@@ -695,20 +695,49 @@
     const tbody = document.getElementById('holdingsTableBody');
     tbody.innerHTML = '';
 
-    if (!rawPortfolioData.positions) return;
+    if (!rawPortfolioData) return;
 
-    const sortedPositions = Object.entries(rawPortfolioData.positions)
+    // 1. Determine active positions map
+    let currentPositions = rawPortfolioData.positions || {};
+
+    // Fallback: If positions object is empty, extract from the latest historical snapshot
+    if (Object.keys(currentPositions).length === 0 && rawPortfolioData.history) {
+      const sortedDates = Object.keys(rawPortfolioData.history).sort();
+      if (sortedDates.length > 0) {
+        const latestDate = sortedDates[sortedDates.length - 1];
+        currentPositions = rawPortfolioData.history[latestDate] || {};
+        
+        // Sync back to top-level object so it remains intact
+        rawPortfolioData.positions = { ...currentPositions };
+      }
+    }
+
+    const sortedPositions = Object.entries(currentPositions)
       .sort((a, b) => b[1] - a[1]);
 
+    if (sortedPositions.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="4" class="py-4 text-center text-slate-500 text-xs">
+            No active positions found. Record a transaction to get started.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    // 2. Render rows for all positions found in the latest snapshot
     sortedPositions.forEach(([ticker, val]) => {
       const isChecked = selectedTickers.has(ticker);
       const share = totalValue > 0 && isChecked ? ((val / totalValue) * 100).toFixed(1) : '0.0';
 
       const row = document.createElement('tr');
-      row.className = `hover:bg-slate-800/40 transition-colors ${!isChecked ? 'opacity-40' : ''}`;
+      row.className = `hover:bg-slate-800/40 transition-colors ${!isChecked ? 'opacity-30' : ''}`;
 
       row.innerHTML = `
-        <td class="py-3 px-4 font-bold text-slate-200">${ticker}</td>
+        <td class="py-3 px-4 font-bold text-slate-200">
+          ${ticker} ${!isChecked ? '<span class="text-xs font-normal text-slate-500">(Filtered)</span>' : ''}
+        </td>
         <td class="py-3 px-4 text-right font-medium text-slate-100">$${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
         <td class="py-3 px-4 text-right text-slate-400">${share}%</td>
         <td class="py-3 px-4 text-center">
