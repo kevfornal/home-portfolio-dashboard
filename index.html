@@ -401,15 +401,99 @@
   // --- 4. UI RENDERING & CHARTS ---
   function getAllTickers() {
     const tickers = new Set();
-    if (rawPortfolioData.positions) {
+    
+    // 1. Collect from current positions
+    if (rawPortfolioData && rawPortfolioData.positions) {
       Object.keys(rawPortfolioData.positions).forEach(t => tickers.add(t));
     }
-    if (rawPortfolioData.history) {
+    
+    // 2. Collect from all historical snapshots
+    if (rawPortfolioData && rawPortfolioData.history) {
       Object.values(rawPortfolioData.history).forEach(snapshot => {
-        Object.keys(snapshot).forEach(t => tickers.add(t));
+        if (snapshot && typeof snapshot === 'object') {
+          Object.keys(snapshot).forEach(t => tickers.add(t));
+        }
       });
     }
-    return Array.from(tickers).sort();
+    
+    return Array.from(tickers).filter(Boolean).sort();
+  }
+
+  async function unlockDashboard() {
+    const passphraseInput = document.getElementById('passphraseInput').value;
+    const errorEl = document.getElementById('authError');
+    errorEl.classList.add('hidden');
+
+    if (!passphraseInput) {
+      errorEl.innerText = "Please enter a passphrase.";
+      errorEl.classList.remove('hidden');
+      return;
+    }
+
+    try {
+      // Fetch from D1 endpoint with static fallback
+      try {
+        const apiRes = await fetch('/api/portfolio');
+        const contentType = apiRes.headers.get('content-type');
+        if (apiRes.ok && contentType && contentType.includes('application/json')) {
+          encContainer = await apiRes.json();
+        }
+      } catch (apiErr) {
+        console.warn("D1 fetch unavailable, falling back to static file.");
+      }
+
+      if (!encContainer) {
+        const res = await fetch('./portfolio_data.enc');
+        if (!res.ok) throw new Error("Could not find portfolio data payload.");
+        encContainer = await res.json();
+      }
+
+      // Decrypt Payload
+      const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
+      const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
+
+      const key = CryptoJS.PBKDF2(passphraseInput, salt, {
+        keySize: 256 / 32,
+        iterations: 1000,
+        hasher: CryptoJS.algo.SHA256
+      });
+
+      const decrypted = CryptoJS.AES.decrypt(encContainer.ciphertext, key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+
+      const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
+      if (!decryptedText) throw new Error("Invalid Key. Decryption failed.");
+
+      rawPortfolioData = JSON.parse(decryptedText);
+      currentPassphrase = passphraseInput;
+
+      // Ensure positions snapshot exists if missing from decrypted payload
+      if (!rawPortfolioData.positions && rawPortfolioData.history) {
+        const sortedDates = Object.keys(rawPortfolioData.history).sort();
+        if (sortedDates.length > 0) {
+          const latestDate = sortedDates[sortedDates.length - 1];
+          rawPortfolioData.positions = { ...rawPortfolioData.history[latestDate] };
+        }
+      }
+
+      // Populate selectedTickers with ALL detected assets
+      selectedTickers = new Set(getAllTickers());
+
+      // Render UI & Transition View
+      document.getElementById('authModal').classList.add('hidden');
+      document.getElementById('dashboardContent').classList.remove('hidden');
+      document.getElementById('lastUpdated').innerText = `Last Sync: ${rawPortfolioData.last_updated || 'N/A'}`;
+
+      buildStockCheckboxes();
+      updateDashboardUI();
+    } catch (e) {
+      console.error(e);
+      errorEl.innerText = e.message || "Invalid Key. Decryption failed.";
+      errorEl.classList.remove('hidden');
+    }
   }
 
   function buildStockCheckboxes() {
