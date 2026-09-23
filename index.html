@@ -210,7 +210,7 @@
             encContainer = await apiRes.json();
           }
         } catch (apiErr) {
-          console.warn("D1 fetch failed, falling back to static file.");
+          console.warn("D1 fetch skipped/failed, falling back to static file.");
         }
 
         // Fall back to static portfolio_data.enc if D1 is empty or unavailable
