@@ -308,39 +308,57 @@
         rawPortfolioData.history[dateVal] = {};
       }
 
-      const dates = Object.keys(rawPortfolioData.history).sort();
-      const targetIndex = dates.indexOf(dateVal);
-      let previousVal = 0;
+      // 1. Ensure the target date exists and inherits existing holdings from previous date
+      const dates = Object.keys(rawPortfolioData.history || {}).sort();
+      
+      if (!rawPortfolioData.history[dateVal]) {
+        // Find latest date prior to dateVal to inherit baseline holdings
+        const priorDates = dates.filter(d => d < dateVal);
+        const lastPriorDate = priorDates[priorDates.length - 1];
+        
+        // Copy forward previous positions so other stocks don't zero out
+        rawPortfolioData.history[dateVal] = lastPriorDate 
+          ? { ...rawPortfolioData.history[lastPriorDate] } 
+          : {};
+      }
 
+      // Re-fetch sorted dates including newly inserted dateVal
+      const updatedDates = Object.keys(rawPortfolioData.history).sort();
+      const targetIndex = updatedDates.indexOf(dateVal);
+
+      // 2. Calculate baseline value prior to targetIndex
+      let previousVal = 0;
       if (targetIndex > 0) {
-        const prevDate = dates[targetIndex - 1];
+        const prevDate = updatedDates[targetIndex - 1];
         previousVal = rawPortfolioData.history[prevDate][ticker] || 0;
       }
 
-      let newVal = 0;
-      if (actionType === 'BUY') {
-        newVal = previousVal + transactionValue;
-      } else if (actionType === 'SELL') {
-        newVal = Math.max(0, previousVal - transactionValue);
-      } else {
-        newVal = transactionValue;
-      }
-
-      for (let i = targetIndex; i < dates.length; i++) {
-        const d = dates[i];
-        if (!rawPortfolioData.history[d]) rawPortfolioData.history[d] = {};
+      // 3. Propagate the change forward across all subsequent dates
+      for (let i = targetIndex; i < updatedDates.length; i++) {
+        const d = updatedDates[i];
         
+        // Ensure day object exists and carries forward prior day's full portfolio map
+        if (!rawPortfolioData.history[d]) {
+          const prevD = updatedDates[i - 1];
+          rawPortfolioData.history[d] = prevD ? { ...rawPortfolioData.history[prevD] } : {};
+        }
+
+        const currentDayVal = rawPortfolioData.history[d][ticker] !== undefined 
+          ? rawPortfolioData.history[d][ticker] 
+          : previousVal;
+
         if (actionType === 'SET') {
-          rawPortfolioData.history[d][ticker] = newVal;
-        } else {
-          const currentDayVal = rawPortfolioData.history[d][ticker] || previousVal;
-          if (actionType === 'BUY') {
-            rawPortfolioData.history[d][ticker] = currentDayVal + transactionValue;
-          } else if (actionType === 'SELL') {
-            rawPortfolioData.history[d][ticker] = Math.max(0, currentDayVal - transactionValue);
-          }
+          rawPortfolioData.history[d][ticker] = transactionValue;
+        } else if (actionType === 'BUY') {
+          rawPortfolioData.history[d][ticker] = currentDayVal + transactionValue;
+        } else if (actionType === 'SELL') {
+          rawPortfolioData.history[d][ticker] = Math.max(0, currentDayVal - transactionValue);
         }
       }
+
+      // 4. Sync the latest historical snapshot to rawPortfolioData.positions for UI rendering
+      const latestDate = updatedDates[updatedDates.length - 1];
+      rawPortfolioData.positions = { ...rawPortfolioData.history[latestDate] };
 
       symbolInput.value = '';
       inputA.value = '';
