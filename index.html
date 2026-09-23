@@ -253,30 +253,47 @@
 
     // === PLACE HERE: Between unlockDashboard() and updateDashboardUI() ===
     async function savePortfolioData() {
-      if (!currentPassphrase || !rawPortfolioData) return;
-      
-      try {
-        // Re-encrypt updated memory state
-        const jsonStr = JSON.stringify(rawPortfolioData);
-        const encrypted = CryptoJS.AES.encrypt(jsonStr, currentPassphrase).toString();
-        
-        // Use existing salt/iv container structure
-        const payload = {
-          salt: encContainer.salt,
-          iv: encContainer.iv,
-          ciphertext: encrypted
-        };
+      if (!rawPortfolioData || !currentPassphrase) return;
 
+      rawPortfolioData.last_updated = new Date().toISOString().split('T')[0];
+    
+      const jsonString = JSON.stringify(rawPortfolioData);
+      const salt = CryptoJS.lib.WordArray.random(128 / 8);
+      const iv = CryptoJS.lib.WordArray.random(128 / 8);
+    
+      const key = CryptoJS.PBKDF2(currentPassphrase, salt, {
+        keySize: 256 / 32,
+        iterations: 1000,
+        hasher: CryptoJS.algo.SHA256
+      });
+    
+      const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+    
+      const payload = JSON.stringify({
+        salt: CryptoJS.enc.Base64.stringify(salt),
+        iv: CryptoJS.enc.Base64.stringify(iv),
+        ciphertext: encrypted.toString()
+      });
+    
+      try {
         const res = await fetch('/api/portfolio', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
+          body: payload
         });
-
-        if (!res.ok) throw new Error(await res.text());
-        console.log("Successfully persisted to Cloudflare D1");
+    
+        const resData = await res.json();
+        if (!res.ok) {
+          alert("Database save failed: " + (resData.error || "Unknown error"));
+        } else {
+          console.log("Successfully persisted to Cloudflare D1!");
+        }
       } catch (err) {
-        console.error("Failed to persist to Cloudflare D1:", err);
+        console.error("D1 save network error:", err);
       }
     }
     // ====================================================================
@@ -587,7 +604,7 @@
             ${ticker}
           </td>
           <td class="py-3 px-4 text-right text-slate-300 font-mono">$${val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-          <td class="py-3 px-4 text-right text-slate-400 font-mono">${isSelected ? weight.toFixed(2) + '%' : 'Excluded'}</td>
+          <td class="py-3 px-4 text-righupdt text-slate-400 font-mono">${isSelected ? weight.toFixed(2) + '%' : 'Excluded'}</td>
           <td class="py-3 px-4 text-center">
             <button onclick="deleteTicker('${ticker}')" title="Delete ${ticker}" class="text-slate-500 hover:text-rose-400 transition-colors p-1">
               <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
