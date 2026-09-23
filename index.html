@@ -205,11 +205,12 @@
         // Try fetching from Cloudflare D1 first
         try {
           const apiRes = await fetch('/api/portfolio');
-          if (apiRes.ok) {
+          const contentType = apiRes.headers.get('content-type');
+          if (apiRes.ok && contentType && contentType.includes('application/json')) {
             encContainer = await apiRes.json();
           }
         } catch (apiErr) {
-          console.warn("D1 fetch skipped/failed, falling back to static file.");
+          console.warn("D1 fetch failed, falling back to static file.");
         }
 
         // Fall back to static portfolio_data.enc if D1 is empty or unavailable
