@@ -507,6 +507,55 @@
       renderHoldingsTable(latestTotal);
     }
 
+    // Make sure savePortfolioData handles errors gracefully without destroying rawPortfolioData state
+    async function savePortfolioData() {
+      if (!rawPortfolioData || !currentPassphrase) return;
+    
+      rawPortfolioData.last_updated = new Date().toISOString().split('T')[0];
+    
+      const jsonString = JSON.stringify(rawPortfolioData);
+      const salt = CryptoJS.lib.WordArray.random(128 / 8);
+      const iv = CryptoJS.lib.WordArray.random(128 / 8);
+    
+      const key = CryptoJS.PBKDF2(currentPassphrase, salt, {
+        keySize: 256 / 32,
+        iterations: 1000,
+        hasher: CryptoJS.algo.SHA256
+      });
+    
+      const encrypted = CryptoJS.AES.encrypt(jsonString, key, {
+        iv: iv,
+        mode: CryptoJS.mode.CBC,
+        padding: CryptoJS.pad.Pkcs7
+      });
+    
+      const payload = JSON.stringify({
+        salt: CryptoJS.enc.Base64.stringify(salt),
+        iv: CryptoJS.enc.Base64.stringify(iv),
+        ciphertext: encrypted.toString()
+      });
+    
+      try {
+        const res = await fetch('/api/portfolio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload
+        });
+    
+        const resData = await res.json();
+    
+        if (!res.ok) {
+          console.error("D1 Server Error details:", resData);
+          alert("Database save failed: " + (resData.error || "Unknown server error"));
+          // Refresh state from backup if save fails to avoid local memory corruption
+          location.reload(); 
+        } else {
+          console.log("Successfully persisted to Cloudflare D1!");
+        }
+      } catch (err) {
+        console.error("D1 save network error:", err);
+      }
+    }
     function fillMissingDates(dates, rawHistory, selectedTickers) {
       if (dates.length === 0) return { filledDates: [], filledTotals: [] };
 
