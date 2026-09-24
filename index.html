@@ -598,8 +598,34 @@
     return dates.filter(d => d >= cutoffStr);
   }
 
+  function getCurrentPositionsFromHistory() {
+    if (!rawPortfolioData || !rawPortfolioData.history) return {};
+
+    const dates = Object.keys(rawPortfolioData.history).sort();
+    if (dates.length === 0) return {};
+
+    const latestPositions = {};
+    const allTickers = getAllTickers();
+
+    // Iterate through dates to find the latest valid value for each ticker
+    allTickers.forEach(ticker => {
+      for (let i = dates.length - 1; i >= 0; i--) {
+        const d = dates[i];
+        if (rawPortfolioData.history[d] && rawPortfolioData.history[d][ticker] !== undefined) {
+          latestPositions[ticker] = rawPortfolioData.history[d][ticker];
+          break;
+        }
+      }
+    });
+
+    return latestPositions;
+  }
+
   function updateDashboardUI() {
     if (!rawPortfolioData || !rawPortfolioData.history) return;
+
+    // Keep rawPortfolioData.positions perfectly aligned with true current holdings
+    rawPortfolioData.positions = getCurrentPositionsFromHistory();
 
     const allDates = Object.keys(rawPortfolioData.history).sort();
     const activeDates = filterDatesByTimeframe(allDates);
@@ -607,7 +633,6 @@
     const chartLabels = activeDates;
     const chartValues = [];
 
-    // Calculate aggregated value per date based on active stock selection
     activeDates.forEach(dateStr => {
       const daySnapshot = rawPortfolioData.history[dateStr] || {};
       let dayTotal = 0;
@@ -633,13 +658,55 @@
     changeEl.innerText = `${isPositive ? '+' : ''}$${periodDiff.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
     changeEl.className = `text-2xl md:text-3xl font-extrabold mt-1 ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`;
 
-    // Render Performance Line Chart
     renderChart(chartLabels, chartValues);
-
-    // Update Holdings Table
     renderHoldingsTable(latestTotal);
   }
 
+  function renderHoldingsTable(totalValue) {
+    const tbody = document.getElementById('holdingsTableBody');
+    tbody.innerHTML = '';
+
+    if (!rawPortfolioData) return;
+
+    // Pull from sync'd positions object
+    const currentPositions = rawPortfolioData.positions || {};
+    const sortedPositions = Object.entries(currentPositions)
+      .filter(([_, val]) => val > 0) // Only display active non-zero holdings
+      .sort((a, b) => b[1] - a[1]);
+
+    if (sortedPositions.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="4" class="py-4 text-center text-slate-500 text-xs">
+            No active positions found.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    sortedPositions.forEach(([ticker, val]) => {
+      const isChecked = selectedTickers.has(ticker);
+      const share = totalValue > 0 && isChecked ? ((val / totalValue) * 100).toFixed(1) : '0.0';
+
+      const row = document.createElement('tr');
+      row.className = `hover:bg-slate-800/40 transition-colors ${!isChecked ? 'opacity-30' : ''}`;
+
+      row.innerHTML = `
+        <td class="py-3 px-4 font-bold text-slate-200">
+          ${ticker} ${!isChecked ? '<span class="text-xs font-normal text-slate-500">(Filtered)</span>' : ''}
+        </td>
+        <td class="py-3 px-4 text-right font-medium text-slate-100">$${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+        <td class="py-3 px-4 text-right text-slate-400">${share}%</td>
+        <td class="py-3 px-4 text-center">
+          <button onclick="removePosition('${ticker}')" class="text-xs text-rose-400 hover:text-rose-300 hover:underline">Remove</button>
+        </td>
+      `;
+      tbody.appendChild(row);
+    });
+  }
+  
+  function updateDashboardUI() {
   function renderChart(labels, values) {
     const ctx = document.getElementById('portfolioChart').getContext('2d');
     if (chartInstance) {
@@ -749,18 +816,25 @@
   }
 
   function removePosition(ticker) {
-    if (!confirm(`Are you sure you want to remove position ${ticker}?`)) return;
+    if (!confirm(`Are you sure you want to permanently remove ${ticker} from all history and positions?`)) return;
 
-    if (rawPortfolioData.positions) delete rawPortfolioData.positions[ticker];
-    
-    // Remove ticker from future history entries
+    // Delete from top-level positions
+    if (rawPortfolioData.positions) {
+      delete rawPortfolioData.positions[ticker];
+    }
+
+    // Completely strip ticker from all historical dates
     if (rawPortfolioData.history) {
       Object.keys(rawPortfolioData.history).forEach(d => {
-        delete rawPortfolioData.history[d][ticker];
+        if (rawPortfolioData.history[d]) {
+          delete rawPortfolioData.history[d][ticker];
+        }
       });
     }
 
+    // Remove from UI selection
     selectedTickers.delete(ticker);
+
     buildStockCheckboxes();
     updateDashboardUI();
     savePortfolioData();
