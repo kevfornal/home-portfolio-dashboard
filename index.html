@@ -173,7 +173,46 @@
   // Initialize Default Date Input
   document.getElementById('newDateInput').value = new Date().toISOString().split('T')[0];
 
-  // --- 1. DECRYPTION & UNLOCK ---
+  // --- 1. UTILITY FUNCTIONS ---
+  function getAllTickers() {
+    const tickers = new Set();
+    if (rawPortfolioData && rawPortfolioData.positions) {
+      Object.keys(rawPortfolioData.positions).forEach(t => tickers.add(t));
+    }
+    if (rawPortfolioData && rawPortfolioData.history) {
+      Object.values(rawPortfolioData.history).forEach(snapshot => {
+        if (snapshot && typeof snapshot === 'object') {
+          Object.keys(snapshot).forEach(t => tickers.add(t));
+        }
+      });
+    }
+    return Array.from(tickers).filter(Boolean).sort();
+  }
+
+  function getCurrentPositionsFromHistory() {
+    if (!rawPortfolioData || !rawPortfolioData.history) return {};
+
+    const dates = Object.keys(rawPortfolioData.history).sort();
+    if (dates.length === 0) return {};
+
+    const latestPositions = {};
+    const allTickers = getAllTickers();
+
+    // Look back through historical dates to find the latest value for each ticker
+    allTickers.forEach(ticker => {
+      for (let i = dates.length - 1; i >= 0; i--) {
+        const d = dates[i];
+        if (rawPortfolioData.history[d] && rawPortfolioData.history[d][ticker] !== undefined) {
+          latestPositions[ticker] = rawPortfolioData.history[d][ticker];
+          break;
+        }
+      }
+    });
+
+    return latestPositions;
+  }
+
+  // --- 2. DECRYPTION & UNLOCK ---
   async function unlockDashboard() {
     const passphraseInput = document.getElementById('passphraseInput').value;
     const errorEl = document.getElementById('authError');
@@ -186,7 +225,7 @@
     }
 
     try {
-      // Fetch from D1 endpoint with static fallback
+      // 1. Fetch from D1 endpoint with static fallback
       try {
         const apiRes = await fetch('/api/portfolio');
         const contentType = apiRes.headers.get('content-type');
@@ -203,7 +242,7 @@
         encContainer = await res.json();
       }
 
-      // Decrypt Payload
+      // 2. Decrypt Payload
       const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
       const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
 
@@ -225,11 +264,11 @@
       rawPortfolioData = JSON.parse(decryptedText);
       currentPassphrase = passphraseInput;
 
-      // Initialize selected tickers set with all available assets
-      const allTickers = getAllTickers();
-      selectedTickers = new Set(allTickers);
+      // 3. Reconcile Positions & Select Tickers
+      rawPortfolioData.positions = getCurrentPositionsFromHistory();
+      selectedTickers = new Set(getAllTickers());
 
-      // Render UI & Transition View
+      // 4. Render UI
       document.getElementById('authModal').classList.add('hidden');
       document.getElementById('dashboardContent').classList.remove('hidden');
       document.getElementById('lastUpdated').innerText = `Last Sync: ${rawPortfolioData.last_updated || 'N/A'}`;
@@ -243,7 +282,7 @@
     }
   }
 
-  // --- 2. PERSISTENCE TO CLOUDFLARE D1 ---
+  // --- 3. PERSISTENCE TO D1 ---
   async function savePortfolioData() {
     if (!rawPortfolioData || !currentPassphrase) return;
 
@@ -281,7 +320,6 @@
       const resData = await res.json();
       if (!res.ok) {
         console.error("D1 save failed:", resData);
-        alert("Database save failed: " + (resData.error || "Unknown server error"));
       } else {
         console.log("Successfully persisted update to Cloudflare D1!");
       }
@@ -290,7 +328,7 @@
     }
   }
 
-  // --- 3. TRANSACTION HANDLING & FORWARD PROPAGATION ---
+  // --- 4. TRANSACTION & POSITION MANAGEMENT ---
   function setEntryMode(mode) {
     activeEntryMode = mode;
     const valueBtn = document.getElementById('modeValueBtn');
@@ -340,7 +378,6 @@
 
     const dates = Object.keys(rawPortfolioData.history).sort();
 
-    // 1. Ensure target date exists and inherits existing holdings
     if (!rawPortfolioData.history[dateVal]) {
       const priorDates = dates.filter(d => d < dateVal);
       const lastPriorDate = priorDates[priorDates.length - 1];
@@ -353,14 +390,12 @@
     const updatedDates = Object.keys(rawPortfolioData.history).sort();
     const targetIndex = updatedDates.indexOf(dateVal);
 
-    // 2. Find baseline value before targetIndex
     let previousVal = 0;
     if (targetIndex > 0) {
       const prevDate = updatedDates[targetIndex - 1];
       previousVal = rawPortfolioData.history[prevDate][ticker] || 0;
     }
 
-    // 3. Propagate changes forward without overwriting other tickers
     for (let i = targetIndex; i < updatedDates.length; i++) {
       const d = updatedDates[i];
 
@@ -382,14 +417,8 @@
       }
     }
 
-    // 4. Update current positions snapshot
-    const latestDate = updatedDates[updatedDates.length - 1];
-    rawPortfolioData.positions = { ...rawPortfolioData.history[latestDate] };
-
-    // Auto-select new ticker if not already tracked
     selectedTickers.add(ticker);
 
-    // Reset Inputs
     document.getElementById('newTickerInput').value = '';
     document.getElementById('inputA').value = '';
     document.getElementById('inputB').value = '';
@@ -399,104 +428,29 @@
     savePortfolioData();
   }
 
-  // --- 4. UI RENDERING & CHARTS ---
-  function getAllTickers() {
-    const tickers = new Set();
-    
-    // 1. Collect from current positions
-    if (rawPortfolioData && rawPortfolioData.positions) {
-      Object.keys(rawPortfolioData.positions).forEach(t => tickers.add(t));
+  function removePosition(ticker) {
+    if (!confirm(`Are you sure you want to permanently delete ${ticker} from all historical records?`)) return;
+
+    if (rawPortfolioData.positions) {
+      delete rawPortfolioData.positions[ticker];
     }
-    
-    // 2. Collect from all historical snapshots
-    if (rawPortfolioData && rawPortfolioData.history) {
-      Object.values(rawPortfolioData.history).forEach(snapshot => {
-        if (snapshot && typeof snapshot === 'object') {
-          Object.keys(snapshot).forEach(t => tickers.add(t));
+
+    if (rawPortfolioData.history) {
+      Object.keys(rawPortfolioData.history).forEach(d => {
+        if (rawPortfolioData.history[d]) {
+          delete rawPortfolioData.history[d][ticker];
         }
       });
     }
-    
-    return Array.from(tickers).filter(Boolean).sort();
+
+    selectedTickers.delete(ticker);
+
+    buildStockCheckboxes();
+    updateDashboardUI();
+    savePortfolioData();
   }
 
-  async function unlockDashboard() {
-    const passphraseInput = document.getElementById('passphraseInput').value;
-    const errorEl = document.getElementById('authError');
-    errorEl.classList.add('hidden');
-
-    if (!passphraseInput) {
-      errorEl.innerText = "Please enter a passphrase.";
-      errorEl.classList.remove('hidden');
-      return;
-    }
-
-    try {
-      // Fetch from D1 endpoint with static fallback
-      try {
-        const apiRes = await fetch('/api/portfolio');
-        const contentType = apiRes.headers.get('content-type');
-        if (apiRes.ok && contentType && contentType.includes('application/json')) {
-          encContainer = await apiRes.json();
-        }
-      } catch (apiErr) {
-        console.warn("D1 fetch unavailable, falling back to static file.");
-      }
-
-      if (!encContainer) {
-        const res = await fetch('./portfolio_data.enc');
-        if (!res.ok) throw new Error("Could not find portfolio data payload.");
-        encContainer = await res.json();
-      }
-
-      // Decrypt Payload
-      const salt = CryptoJS.enc.Base64.parse(encContainer.salt);
-      const iv = CryptoJS.enc.Base64.parse(encContainer.iv);
-
-      const key = CryptoJS.PBKDF2(passphraseInput, salt, {
-        keySize: 256 / 32,
-        iterations: 1000,
-        hasher: CryptoJS.algo.SHA256
-      });
-
-      const decrypted = CryptoJS.AES.decrypt(encContainer.ciphertext, key, {
-        iv: iv,
-        mode: CryptoJS.mode.CBC,
-        padding: CryptoJS.pad.Pkcs7
-      });
-
-      const decryptedText = decrypted.toString(CryptoJS.enc.Utf8);
-      if (!decryptedText) throw new Error("Invalid Key. Decryption failed.");
-
-      rawPortfolioData = JSON.parse(decryptedText);
-      currentPassphrase = passphraseInput;
-
-      // Ensure positions snapshot exists if missing from decrypted payload
-      if (!rawPortfolioData.positions && rawPortfolioData.history) {
-        const sortedDates = Object.keys(rawPortfolioData.history).sort();
-        if (sortedDates.length > 0) {
-          const latestDate = sortedDates[sortedDates.length - 1];
-          rawPortfolioData.positions = { ...rawPortfolioData.history[latestDate] };
-        }
-      }
-
-      // Populate selectedTickers with ALL detected assets
-      selectedTickers = new Set(getAllTickers());
-
-      // Render UI & Transition View
-      document.getElementById('authModal').classList.add('hidden');
-      document.getElementById('dashboardContent').classList.remove('hidden');
-      document.getElementById('lastUpdated').innerText = `Last Sync: ${rawPortfolioData.last_updated || 'N/A'}`;
-
-      buildStockCheckboxes();
-      updateDashboardUI();
-    } catch (e) {
-      console.error(e);
-      errorEl.innerText = e.message || "Invalid Key. Decryption failed.";
-      errorEl.classList.remove('hidden');
-    }
-  }
-
+  // --- 5. UI & CHART RENDERING ---
   function buildStockCheckboxes() {
     const container = document.getElementById('stockCheckboxes');
     container.innerHTML = '';
@@ -520,37 +474,6 @@
     });
   }
 
-  async function resetPortfolioData() {
-    const confirmed = confirm(
-      "WARNING: This will permanently erase all portfolio holdings, history, and tickers from your Cloudflare D1 database. Are you sure you want to start fresh?"
-    );
-    
-    if (!confirmed) return;
-  
-    const today = new Date().toISOString().split('T')[0];
-  
-    // Re-initialize portfolio object with a clean slate
-    rawPortfolioData = {
-      last_updated: today,
-      positions: {},
-      history: {
-        [today]: {}
-      }
-    };
-  
-    // Clear UI state variables
-    selectedTickers.clear();
-  
-    // Rebuild UI components
-    buildStockCheckboxes();
-    updateDashboardUI();
-  
-    // Persist the clean state to Cloudflare D1
-    await savePortfolioData();
-  
-    alert("Portfolio reset successfully! You can now start recording your actual positions.");
-  }
-  
   function toggleTicker(ticker) {
     if (selectedTickers.has(ticker)) {
       selectedTickers.delete(ticker);
@@ -601,13 +524,14 @@
   function updateDashboardUI() {
     if (!rawPortfolioData || !rawPortfolioData.history) return;
 
+    rawPortfolioData.positions = getCurrentPositionsFromHistory();
+
     const allDates = Object.keys(rawPortfolioData.history).sort();
     const activeDates = filterDatesByTimeframe(allDates);
 
     const chartLabels = activeDates;
     const chartValues = [];
 
-    // Calculate aggregated value per date based on active stock selection
     activeDates.forEach(dateStr => {
       const daySnapshot = rawPortfolioData.history[dateStr] || {};
       let dayTotal = 0;
@@ -621,7 +545,6 @@
       chartValues.push(dayTotal);
     });
 
-    // Update KPI Cards
     const latestTotal = chartValues.length > 0 ? chartValues[chartValues.length - 1] : 0;
     const startTotal = chartValues.length > 0 ? chartValues[0] : 0;
     const periodDiff = latestTotal - startTotal;
@@ -633,10 +556,7 @@
     changeEl.innerText = `${isPositive ? '+' : ''}$${periodDiff.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
     changeEl.className = `text-2xl md:text-3xl font-extrabold mt-1 ${isPositive ? 'text-emerald-400' : 'text-rose-400'}`;
 
-    // Render Performance Line Chart
     renderChart(chartLabels, chartValues);
-
-    // Update Holdings Table
     renderHoldingsTable(latestTotal);
   }
 
@@ -697,36 +617,22 @@
 
     if (!rawPortfolioData) return;
 
-    // 1. Determine active positions map
-    let currentPositions = rawPortfolioData.positions || {};
-
-    // Fallback: If positions object is empty, extract from the latest historical snapshot
-    if (Object.keys(currentPositions).length === 0 && rawPortfolioData.history) {
-      const sortedDates = Object.keys(rawPortfolioData.history).sort();
-      if (sortedDates.length > 0) {
-        const latestDate = sortedDates[sortedDates.length - 1];
-        currentPositions = rawPortfolioData.history[latestDate] || {};
-        
-        // Sync back to top-level object so it remains intact
-        rawPortfolioData.positions = { ...currentPositions };
-      }
-    }
-
+    const currentPositions = rawPortfolioData.positions || {};
     const sortedPositions = Object.entries(currentPositions)
+      .filter(([_, val]) => val > 0)
       .sort((a, b) => b[1] - a[1]);
 
     if (sortedPositions.length === 0) {
       tbody.innerHTML = `
         <tr>
           <td colspan="4" class="py-4 text-center text-slate-500 text-xs">
-            No active positions found. Record a transaction to get started.
+            No active positions found.
           </td>
         </tr>
       `;
       return;
     }
 
-    // 2. Render rows for all positions found in the latest snapshot
     sortedPositions.forEach(([ticker, val]) => {
       const isChecked = selectedTickers.has(ticker);
       const share = totalValue > 0 && isChecked ? ((val / totalValue) * 100).toFixed(1) : '0.0';
@@ -747,25 +653,7 @@
       tbody.appendChild(row);
     });
   }
-
-  function removePosition(ticker) {
-    if (!confirm(`Are you sure you want to remove position ${ticker}?`)) return;
-
-    if (rawPortfolioData.positions) delete rawPortfolioData.positions[ticker];
-    
-    // Remove ticker from future history entries
-    if (rawPortfolioData.history) {
-      Object.keys(rawPortfolioData.history).forEach(d => {
-        delete rawPortfolioData.history[d][ticker];
-      });
-    }
-
-    selectedTickers.delete(ticker);
-    buildStockCheckboxes();
-    updateDashboardUI();
-    savePortfolioData();
-  }
 </script>
-
+  
 </body>
 </html>
